@@ -312,6 +312,14 @@
 
   .fadein { animation: fadein .35s ease both; }
 
+  /* Diagnostic log */
+  #diag-log::-webkit-scrollbar { width: 2px; }
+  #diag-log::-webkit-scrollbar-thumb { background: rgba(69,183,209,.2); }
+
+  /* Signal strength bar */
+  .strength-bar { height: 4px; border-radius: 2px; margin-top: 8px; background: var(--border); overflow: hidden; }
+  .strength-fill { height: 100%; border-radius: 2px; transition: width .5s; }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 3px; }
   ::-webkit-scrollbar-thumb { background: rgba(0,255,136,.15); border-radius: 2px; }
@@ -351,6 +359,7 @@
     <button id="btn-sound" title="Activar/silenciar alarma">🔔</button>
     <button id="btn-auto">▶ AUTO 15M</button>
     <button id="btn-analyze">⚡ ANALIZAR</button>
+    <button id="btn-diag" style="background:rgba(69,183,209,.06);border-color:rgba(69,183,209,.4);color:#45b7d1;font-size:10px;padding:10px 10px;" title="Ver diagnóstico">🔍</button>
   </div>
 
   <!-- TICKER -->
@@ -366,6 +375,15 @@
       </div>
     </div>
     <div class="session-quality" id="sess-quality"></div>
+  </div>
+
+  <!-- DIAGNOSTIC PANEL -->
+  <div id="diag-panel" style="display:none; border:1px solid rgba(69,183,209,.2); border-radius:8px; padding:12px 14px; margin-bottom:14px; background:rgba(69,183,209,.03);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <span style="font-size:9px; color:#45b7d1; letter-spacing:2px;">📡 DIAGNÓSTICO EN TIEMPO REAL</span>
+      <span id="diag-status" style="font-size:9px; color:#64748b;"></span>
+    </div>
+    <div id="diag-log" style="font-size:10px; color:#64748b; line-height:1.8; max-height:160px; overflow-y:auto;"></div>
   </div>
 
   <!-- LOADING -->
@@ -398,6 +416,12 @@
           <div class="conf-num" id="conf-num"></div>
           <div class="conf-denom">/100</div>
         </div>
+      </div>
+      <div class="strength-bar">
+        <div class="strength-fill" id="strength-fill"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-bottom:10px;">
+        <span>65% mín</span><span id="strength-label"></span><span>100% máx</span>
       </div>
       <div class="expiry-reason" id="expiry-reason"></div>
       <div class="price-levels">
@@ -470,35 +494,32 @@ function tdUrl(path) {
 }
 
 const SYSTEM_PROMPT = `Eres un analista experto en trading de divisas Forex con más de 20 años de experiencia.
-Tu tarea es analizar el mercado de divisas y proporcionar señales de trading para gráficos de 30 minutos.
+Tu tarea es analizar el mercado de divisas y SIEMPRE emitir la mejor señal disponible.
 
-REGLA CRÍTICA: Solo emite señales cuando la confianza sea de 80% o superior (80-100).
-Si ningún par alcanza 80% de confianza, devuelve "signal": null y explica por qué en "marketSummary".
-Sé flexible: con 3 de los 6 criterios cumplidos puedes emitir señal si la confianza es 80%+.
+REGLA PRINCIPAL: SIEMPRE debes emitir una señal. Elige el par con mejores condiciones técnicas.
+Nunca devuelvas signal: null. El mercado siempre tiene el mejor par disponible para operar.
+El umbral mínimo de confianza es 65%. Si ningún par supera 65%, elige el mejor y explica las limitaciones.
 
-Criterios:
-- Confluencia de al menos 3 indicadores técnicos alineados (RSI, MACD, Medias Móviles)
-- Tendencia clara en el timeframe de 30 minutos
-- Soporte o resistencia clave respetado
-- Sesión de mercado activa con liquidez razonable (mejor en overlap o núcleo NY, aceptable en Londres y Tokio)
-- Sin noticias de alto impacto inminentes
-- Volatilidad moderada
+Niveles de confianza:
+- 90-100%: Señal EXCEPCIONAL — todos los indicadores alineados perfectamente
+- 80-89%:  Señal FUERTE — mayoría de indicadores alineados
+- 70-79%:  Señal MODERADA — algunos indicadores alineados, operar con precaución
+- 65-69%:  Señal DÉBIL — condiciones mixtas, tamaño de operación reducido
 
-CALIDAD POR SESIÓN (ajusta el umbral de confianza según la sesión activa):
-- Overlap Londres/NY (13-16 UTC): umbral 80% — máxima liquidez
-- Núcleo NY (16-20 UTC): umbral 80% — alta liquidez
-- Londres (8-13 UTC): umbral 82% — liquidez aceptable
-- Cierre NY (20-22 UTC): umbral 85% — precaución, liquidez bajando
-- Tokio/Sydney (22-8 UTC): umbral 88% — bajo volumen, sé muy selectivo
+Criterios a evaluar (elige el par que cumpla más):
+- RSI: sobrecompra (>70) sugiere PUT, sobreventa (<30) sugiere CALL, zona neutral sigue tendencia
+- MACD: si MACD > señal → CALL, si MACD < señal → PUT
+- EMA: si EMA9 > EMA21 → tendencia alcista (CALL), si EMA9 < EMA21 → tendencia bajista (PUT)
+- Precio cerca de soporte → CALL, cerca de resistencia → PUT
+- Sesión activa con liquidez (overlap NY/Londres es mejor)
 
 CÁLCULO DE EXPIRACIÓN (expiry en minutos):
-Base: 80-84%→15min · 85-89%→12min · 90-94%→10min · 95-100%→8min
-Ajustes: Volatilidad HIGH -5 · LOW +5 · Overlap(13-16UTC) -5 · Cierre NY +5 · newsImpact HIGH -5 · RSI extremo(<30,>70) -5
+Base: 65-69%→15min · 70-79%→12min · 80-89%→10min · 90-100%→8min
+Ajustes: Volatilidad HIGH -3 · LOW +3 · Overlap(13-16UTC) -2 · RSI extremo -2
 Límites: mínimo 5, máximo 15. Incluye "expiryReason".
 
-Responde SOLO con JSON válido sin markdown ni backticks:
-Sin señal: {"signal":null,"marketSummary":"razón","riskWarning":"advertencia"}
-Con señal: {"signal":{"pair":"EUR/USD","direction":"CALL","confidence":85,"entry":"1.0850","stopLoss":"1.0820","takeProfit":"1.0890","timeframe":"30M","expiry":12,"expiryReason":"cálculo corto","reasoning":"2-3 oraciones","confluenceFactors":["f1","f2","f3"],"technicals":{"rsi":55,"trend":"BULLISH","volatility":"MEDIUM","support":"1.0820","resistance":"1.0890"},"marketConditions":{"sentiment":"RISK_ON","session":"NEW_YORK","newsImpact":"LOW"}},"marketSummary":"resumen","riskWarning":"advertencia"}`;
+SIEMPRE responde con JSON válido sin markdown ni backticks:
+{"signal":{"pair":"EUR/USD","direction":"CALL","confidence":75,"entry":"1.0850","stopLoss":"1.0820","takeProfit":"1.0890","timeframe":"30M","expiry":12,"expiryReason":"cálculo","reasoning":"2-3 oraciones explicando la señal","confluenceFactors":["RSI en 45 zona neutral","EMA9 > EMA21 tendencia alcista","MACD bullish"],"technicals":{"rsi":45,"trend":"BULLISH","volatility":"MEDIUM","support":"1.0820","resistance":"1.0890"},"marketConditions":{"sentiment":"RISK_ON","session":"NEW_YORK","newsImpact":"LOW"}},"marketSummary":"resumen del mercado","riskWarning":"advertencia específica"}`;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let soundEnabled = true;
@@ -542,29 +563,32 @@ let pricesLoading = false;
 async function fetchRealPrices() {
   if (pricesLoading) return;
   pricesLoading = true;
+  diag("📡 Obteniendo precios reales...", "#45b7d1");
   try {
-    // Twelve Data price endpoint — up to 8 symbols per call
-    const symbols = PAIRS.map(p => p.replace("/","/")).join(",");
+    const symbols = PAIRS.join(",");
     const url = tdUrl(`/price?symbol=${encodeURIComponent(symbols)}&apikey=${TD_KEY}`);
     const resp = await fetch(url);
     const data = await resp.json();
     const updated = {};
-    // Response is {symbol: {price:"1.0850"}} for multiple or {price:"1.0850"} for single
     for (const pair of PAIRS) {
-      const key = pair; // Twelve Data returns keys as-is e.g. "EUR/USD"
-      const entry = data[key] || data[pair.replace("/","/")] || null;
+      const entry = data[pair] || null;
       if (entry && entry.price) {
         updated[pair] = parseFloat(entry.price).toFixed(pair.includes("JPY")||pair.includes("MXN")?2:4);
       } else if (data.price) {
-        // single symbol fallback
         updated[pair] = parseFloat(data.price).toFixed(pair.includes("JPY")||pair.includes("MXN")?2:4);
       }
     }
     if (Object.keys(updated).length > 0) {
       prices = { ...prices, ...updated };
       renderTicker();
+      diag(`✅ Precios OK: ${Object.keys(updated).join(", ")}`, "#00ff88");
+    } else {
+      diag(`⚠️ Sin precios en respuesta. Datos: ${JSON.stringify(data).slice(0,120)}`, "#ffcc00");
     }
-  } catch(e) { console.warn("Price fetch error:", e); }
+  } catch(e) {
+    diag(`❌ Error precios: ${e.message}`, "#ff4466");
+    console.warn("Price fetch error:", e);
+  }
   finally { pricesLoading = false; }
 }
 
@@ -614,6 +638,25 @@ async function fetchSupportResistance(pair) {
     const resistance = Math.max(...highs).toFixed(isJPY ? 2 : 4);
     return { support, resistance };
   } catch(e) { return { support: "—", resistance: "—" }; }
+}
+
+// ─── DIAGNOSTIC LOG ──────────────────────────────────────────────────────────
+function diag(msg, color="#64748b") {
+  const log = document.getElementById("diag-log");
+  if (!log) return;
+  const time = new Date().toLocaleTimeString("es-ES");
+  const line = document.createElement("div");
+  line.style.color = color;
+  line.innerHTML = `<span style="color:#1e2530">[${time}]</span> ${msg}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  // Keep max 50 lines
+  while (log.children.length > 50) log.removeChild(log.firstChild);
+}
+
+function diagStatus(msg) {
+  const el = document.getElementById("diag-status");
+  if (el) el.textContent = msg;
 }
 
 // ─── COLORS ───────────────────────────────────────────────────────────────────
@@ -775,7 +818,7 @@ function renderSignal(sig) {
   // Confidence badge
   const cb = document.getElementById("conf-badge");
   if (cb) {
-    cb.textContent = sig.confidence >= 97 ? "⚡ EXCEPCIONAL" : sig.confidence >= 90 ? "★ MUY FUERTE" : "✓ SEÑAL VÁLIDA";
+    cb.textContent = sig.confidence >= 97 ? "⚡ EXCEPCIONAL" : sig.confidence >= 90 ? "★ MUY FUERTE" : sig.confidence >= 80 ? "✓ FUERTE" : sig.confidence >= 70 ? "◆ MODERADA" : "▸ DÉBIL";
     cb.style.color = cc; cb.style.borderColor = cc+"60"; cb.style.background = cc+"10";
   }
 
@@ -796,6 +839,15 @@ function renderSignal(sig) {
   if (ring) { ring.style.borderColor = cc; ring.style.boxShadow = `0 0 18px ${cc}40`; }
   const cn = document.getElementById("conf-num");
   if (cn) { cn.textContent = sig.confidence; cn.style.color = cc; }
+
+  // Strength bar
+  const sf = document.getElementById("strength-fill");
+  const sl = document.getElementById("strength-label");
+  if (sf) { sf.style.width = `${sig.confidence}%`; sf.style.background = cc; }
+  if (sl) {
+    sl.textContent = sig.confidence >= 90 ? "⚡ EXCEPCIONAL" : sig.confidence >= 80 ? "★ FUERTE" : sig.confidence >= 70 ? "◆ MODERADA" : "▸ DÉBIL";
+    sl.style.color = cc;
+  }
 
   // Expiry reason
   const er = document.getElementById("expiry-reason");
@@ -866,24 +918,37 @@ async function fetchSignal() {
   const nyInfo = getNYInfo();
   const sq     = getSessionQuality();
 
-  // Show "fetching data" status
-  set("loading-box", "");
+  diag("═══════════════════════════════", "#1e2530");
+  diag(`🚀 Iniciando análisis #${history.length + 1}`, "#45b7d1");
+  diagStatus("analizando...");
+
   const loadingBox = document.getElementById("loading-box");
   if (loadingBox) loadingBox.querySelector(".loading-text").textContent = "OBTENIENDO DATOS REALES...";
 
   // Fetch real technicals for all pairs in parallel
   let techData = {};
   let srData   = {};
+  diag("📊 Descargando RSI, MACD, EMA para 8 pares...", "#45b7d1");
   try {
     const techResults = await Promise.all(PAIRS.map(p => fetchTechnicals(p)));
     const srResults   = await Promise.all(PAIRS.map(p => fetchSupportResistance(p)));
     PAIRS.forEach((p, i) => {
       techData[p] = techResults[i];
       srData[p]   = srResults[i];
+      if (techResults[i]) {
+        diag(`  ${p}: RSI=${techResults[i].rsi} | ${techResults[i].trend} | MACD_bull=${techResults[i].macdBull}`, "#94a3b8");
+      } else {
+        diag(`  ${p}: ⚠️ sin datos técnicos`, "#ffcc00");
+      }
     });
-  } catch(e) { console.warn("Could not fetch technicals:", e); }
+    diag("✅ Indicadores obtenidos", "#00ff88");
+  } catch(e) {
+    diag(`❌ Error indicadores: ${e.message}`, "#ff4466");
+    console.warn("Could not fetch technicals:", e);
+  }
 
-  if (loadingBox) loadingBox.querySelector(".loading-text").textContent = "ANALIZANDO CON IA...";
+  if (loadingBox) loadingBox.querySelector(".loading-text").textContent = "CONSULTANDO IA...";
+  diag("🤖 Enviando datos a Claude para análisis...", "#45b7d1");
 
   // Build rich market data string for Claude
   const marketData = PAIRS.map(p => {
@@ -931,7 +996,20 @@ Solo emite señal ≥80% si las condiciones técnicas reales lo justifican.`;
 
     hide("loading-box");
 
-    const hasSignal = parsed.signal && parsed.signal.confidence >= 80;
+    const hasSignal = parsed.signal && parsed.signal.confidence >= 65;
+
+    if (hasSignal) {
+      const s = parsed.signal;
+      const confColor = s.confidence >= 90 ? "#00ff88" : s.confidence >= 80 ? "#96e6a1" : s.confidence >= 70 ? "#ffcc00" : "#ff4466";
+      diag(`🎯 SEÑAL: ${s.pair} ${s.direction} | Confianza: ${s.confidence}%`, confColor);
+      diag(`   Entrada: ${s.entry} | SL: ${s.stopLoss} | TP: ${s.takeProfit}`, "#94a3b8");
+      diag(`   Duración: ${s.expiry} min | ${s.expiryReason || ""}`, "#94a3b8");
+      diagStatus(`${s.pair} ${s.direction} ${s.confidence}%`);
+    } else {
+      diag(`🚫 Sin señal: ${parsed.marketSummary || "condiciones insuficientes"}`, "#ff4466");
+      diagStatus("sin señal");
+    }
+
     const entry = {
       ...(hasSignal ? parsed.signal : {}),
       hasSignal,
@@ -953,6 +1031,8 @@ Solo emite señal ≥80% si las condiciones técnicas reales lo justifican.`;
     hide("loading-box");
     show("error-box");
     set("error-text", "⚠ Error: " + e.message);
+    diag(`❌ Error crítico: ${e.message}`, "#ff4466");
+    diagStatus("error");
   } finally {
     if (btn) { btn.textContent = "⚡ ANALIZAR"; btn.disabled = false; }
   }
@@ -1005,6 +1085,19 @@ function init() {
 
   // Analyze button
   document.getElementById("btn-analyze")?.addEventListener("click", fetchSignal);
+
+  // Diagnostic toggle
+  document.getElementById("btn-diag")?.addEventListener("click", () => {
+    const panel = document.getElementById("diag-panel");
+    if (!panel) return;
+    const visible = panel.style.display !== "none";
+    panel.style.display = visible ? "none" : "block";
+    document.getElementById("btn-diag").style.background = visible ? "rgba(69,183,209,.06)" : "rgba(69,183,209,.2)";
+  });
+
+  // Initial diagnostic message
+  diag("Sistema iniciado. Presiona ⚡ ANALIZAR o activa AUTO 15M", "#45b7d1");
+  diag(`Pares monitoreados: ${PAIRS.join(", ")}`, "#64748b");
 }
 
 window.addEventListener("DOMContentLoaded", init);
